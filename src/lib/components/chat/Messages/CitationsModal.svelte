@@ -2,6 +2,7 @@
 	import { getContext, onMount, tick } from 'svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
+	import { WEBUI_API_BASE_URL } from '$lib/constants';
 
 	const i18n = getContext('i18n');
 
@@ -13,6 +14,7 @@
 	let mergedDocuments = [];
 
 	function calculatePercentage(distance: number) {
+		if (typeof distance !== 'number') return null;
 		if (distance < 0) return 0;
 		if (distance > 1) return 100;
 		return Math.round(distance * 10000) / 100;
@@ -38,9 +40,19 @@
 			};
 		});
 		if (mergedDocuments.every((doc) => doc.distance !== undefined)) {
-			mergedDocuments.sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity));
+			mergedDocuments = mergedDocuments.sort(
+				(a, b) => (b.distance ?? Infinity) - (a.distance ?? Infinity)
+			);
 		}
 	}
+
+	const decodeString = (str: string) => {
+		try {
+			return decodeURIComponent(str);
+		} catch (e) {
+			return str;
+		}
+	};
 </script>
 
 <Modal size="lg" bind:show>
@@ -87,15 +99,15 @@
 							>
 								<div class="text-sm dark:text-gray-400 flex items-center gap-2 w-fit">
 									<a
-										class="hover:text-gray-500 hover:dark:text-gray-100 underline flex-grow"
+										class="hover:text-gray-500 dark:hover:text-gray-100 underline grow"
 										href={document?.metadata?.file_id
-											? `/api/v1/files/${document?.metadata?.file_id}/content${document?.metadata?.page !== undefined ? `#page=${document.metadata.page + 1}` : ''}`
+											? `${WEBUI_API_BASE_URL}/files/${document?.metadata?.file_id}/content${document?.metadata?.page !== undefined ? `#page=${document.metadata.page + 1}` : ''}`
 											: document.source?.url?.includes('http')
 												? document.source.url
 												: `#`}
 										target="_blank"
 									>
-										{document?.metadata?.name ?? document.source.name}
+										{decodeString(document?.metadata?.name ?? document.source.name)}
 									</a>
 									{#if document?.metadata?.page}
 										<span class="text-xs text-gray-500 dark:text-gray-400">
@@ -119,15 +131,23 @@
 										<div class="text-sm my-1 dark:text-gray-400 flex items-center gap-2 w-fit">
 											{#if showPercentage}
 												{@const percentage = calculatePercentage(document.distance)}
-												<span class={`px-1 rounded font-medium ${getRelevanceColor(percentage)}`}>
-													{percentage.toFixed(2)}%
-												</span>
+
+												{#if typeof percentage === 'number'}
+													<span
+														class={`px-1 rounded-sm font-medium ${getRelevanceColor(percentage)}`}
+													>
+														{percentage.toFixed(2)}%
+													</span>
+												{/if}
+
+												{#if typeof document?.distance === 'number'}
+													<span class="text-gray-500 dark:text-gray-500">
+														({(document?.distance ?? 0).toFixed(4)})
+													</span>
+												{/if}
+											{:else if typeof document?.distance === 'number'}
 												<span class="text-gray-500 dark:text-gray-500">
-													({document.distance.toFixed(4)})
-												</span>
-											{:else}
-												<span class="text-gray-500 dark:text-gray-500">
-													{document.distance.toFixed(4)}
+													({(document?.distance ?? 0).toFixed(4)})
 												</span>
 											{/if}
 										</div>
@@ -163,7 +183,7 @@
 					</div>
 
 					{#if documentIdx !== mergedDocuments.length - 1}
-						<hr class=" dark:border-gray-850 my-3" />
+						<hr class="border-gray-100 dark:border-gray-850 my-3" />
 					{/if}
 				{/each}
 			</div>

@@ -9,9 +9,14 @@
 
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
-	import { mobile, showSidebar, knowledge as _knowledge } from '$lib/stores';
+	import { mobile, showSidebar, knowledge as _knowledge, config, user } from '$lib/stores';
 
-	import { updateFileDataContentById, uploadFile } from '$lib/apis/files';
+	import {
+		updateFileDataContentById,
+		uploadFile,
+		deleteFileById,
+		getFileById
+	} from '$lib/apis/files';
 	import {
 		addFileToKnowledgeById,
 		getKnowledgeById,
@@ -84,12 +89,15 @@
 
 	let selectedFile = null;
 	let selectedFileId = null;
+	let selectedFileContent = '';
+
+	// Add cache object
+	let fileContentCache = new Map();
 
 	$: if (selectedFileId) {
 		const file = (knowledge?.files ?? []).find((file) => file.id === selectedFileId);
 		if (file) {
-			file.data = file.data ?? { content: '' };
-			selectedFile = file;
+			fileSelectHandler(file);
 		} else {
 			selectedFile = null;
 		}
@@ -131,25 +139,27 @@
 			return null;
 		}
 
-		knowledge.files = [...(knowledge.files ?? []), fileItem];
-
-		// Check if the file is an audio file and transcribe/convert it to text file
-		if (['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/x-m4a'].includes(file['type'])) {
-			const res = await transcribeAudio(localStorage.token, file).catch((error) => {
-				toast.error(error);
-				return null;
+		if (
+			($config?.file?.max_size ?? null) !== null &&
+			file.size > ($config?.file?.max_size ?? 0) * 1024 * 1024
+		) {
+			console.log('File exceeds max size limit:', {
+				fileSize: file.size,
+				maxSize: ($config?.file?.max_size ?? 0) * 1024 * 1024
 			});
-
-			if (res) {
-				console.log(res);
-				const blob = new Blob([res.text], { type: 'text/plain' });
-				file = blobToFile(blob, `${file.name}.txt`);
-			}
+			toast.error(
+				$i18n.t(`File size should not exceed {{maxSize}} MB.`, {
+					maxSize: $config?.file?.max_size
+				})
+			);
+			return;
 		}
+
+		knowledge.files = [...(knowledge.files ?? []), fileItem];
 
 		try {
 			const uploadedFile = await uploadFile(localStorage.token, file).catch((e) => {
-				toast.error(e);
+				toast.error(`${e}`);
 				return null;
 			});
 
@@ -169,7 +179,7 @@
 				toast.error($i18n.t('Failed to upload file.'));
 			}
 		} catch (e) {
-			toast.error(e);
+			toast.error(`${e}`);
 		}
 	};
 
@@ -339,7 +349,7 @@
 	const syncDirectoryHandler = async () => {
 		if ((knowledge?.files ?? []).length > 0) {
 			const res = await resetKnowledgeById(localStorage.token, id).catch((e) => {
-				toast.error(e);
+				toast.error(`${e}`);
 			});
 
 			if (res) {
@@ -357,7 +367,7 @@
 	const addFileHandler = async (fileId) => {
 		const updatedKnowledge = await addFileToKnowledgeById(localStorage.token, id, fileId).catch(
 			(e) => {
-				toast.error(e);
+				toast.error(`${e}`);
 				return null;
 			}
 		);
@@ -372,26 +382,33 @@
 	};
 
 	const deleteFileHandler = async (fileId) => {
-		const updatedKnowledge = await removeFileFromKnowledgeById(
-			localStorage.token,
-			id,
-			fileId
-		).catch((e) => {
-			toast.error(e);
-		});
+		try {
+			console.log('Starting file deletion process for:', fileId);
 
-		if (updatedKnowledge) {
-			knowledge = updatedKnowledge;
-			toast.success($i18n.t('File removed successfully.'));
+			// Remove from knowledge base only
+			const updatedKnowledge = await removeFileFromKnowledgeById(localStorage.token, id, fileId);
+
+			console.log('Knowledge base updated:', updatedKnowledge);
+
+			if (updatedKnowledge) {
+				knowledge = updatedKnowledge;
+				toast.success($i18n.t('File removed successfully.'));
+			}
+		} catch (e) {
+			console.error('Error in deleteFileHandler:', e);
+			toast.error(`${e}`);
 		}
 	};
 
 	const updateFileContentHandler = async () => {
 		const fileId = selectedFile.id;
-		const content = selectedFile.data.content;
+		const content = selectedFileContent;
+
+		// Clear the cache for this file since we're updating it
+		fileContentCache.delete(fileId);
 
 		const res = updateFileDataContentById(localStorage.token, fileId, content).catch((e) => {
-			toast.error(e);
+			toast.error(`${e}`);
 		});
 
 		const updatedKnowledge = await updateFileFromKnowledgeById(
@@ -399,7 +416,7 @@
 			id,
 			fileId
 		).catch((e) => {
-			toast.error(e);
+			toast.error(`${e}`);
 		});
 
 		if (res && updatedKnowledge) {
@@ -426,7 +443,7 @@
 				description: knowledge.description,
 				access_control: knowledge.access_control
 			}).catch((e) => {
-				toast.error(e);
+				toast.error(`${e}`);
 			});
 
 			if (res) {
@@ -444,9 +461,38 @@
 		}
 	};
 
+	const fileSelectHandler = async (file) => {
+		try {
+			selectedFile = file;
+
+			// Check cache first
+			if (fileContentCache.has(file.id)) {
+				selectedFileContent = fileContentCache.get(file.id);
+				return;
+			}
+
+			const response = await getFileById(localStorage.token, file.id);
+			if (response) {
+				selectedFileContent = response.data.content;
+				// Cache the content
+				fileContentCache.set(file.id, response.data.content);
+			} else {
+				toast.error($i18n.t('No content found in file.'));
+			}
+		} catch (e) {
+			toast.error($i18n.t('Failed to load file content.'));
+		}
+	};
+
 	const onDragOver = (e) => {
 		e.preventDefault();
-		dragged = true;
+
+		// Check if a file is being draggedOver.
+		if (e.dataTransfer?.types?.includes('Files')) {
+			dragged = true;
+		} else {
+			dragged = false;
+		}
 	};
 
 	const onDragLeave = () => {
@@ -457,15 +503,17 @@
 		e.preventDefault();
 		dragged = false;
 
-		if (e.dataTransfer?.files) {
-			const inputFiles = e.dataTransfer?.files;
+		if (e.dataTransfer?.types?.includes('Files')) {
+			if (e.dataTransfer?.files) {
+				const inputFiles = e.dataTransfer?.files;
 
-			if (inputFiles && inputFiles.length > 0) {
-				for (const file of inputFiles) {
-					await uploadFileHandler(file);
+				if (inputFiles && inputFiles.length > 0) {
+					for (const file of inputFiles) {
+						await uploadFileHandler(file);
+					}
+				} else {
+					toast.error($i18n.t(`File not found.`));
 				}
-			} else {
-				toast.error($i18n.t(`File not found.`));
 			}
 		}
 	};
@@ -510,7 +558,7 @@
 		id = $page.params.id;
 
 		const res = await getKnowledgeById(localStorage.token, id).catch((e) => {
-			toast.error(e);
+			toast.error(`${e}`);
 			return null;
 		});
 
@@ -533,6 +581,14 @@
 		dropZone?.removeEventListener('drop', onDrop);
 		dropZone?.removeEventListener('dragleave', onDragLeave);
 	});
+
+	const decodeString = (str: string) => {
+		try {
+			return decodeURIComponent(str);
+		} catch (e) {
+			return str;
+		}
+	};
 </script>
 
 {#if dragged}
@@ -544,7 +600,7 @@
 		role="region"
 		aria-label="Drag and Drop Container"
 	>
-		<div class="absolute w-full h-full backdrop-blur bg-gray-800/40 flex justify-center">
+		<div class="absolute w-full h-full backdrop-blur-sm bg-gray-800/40 flex justify-center">
 			<div class="m-auto pt-64 flex flex-col justify-center">
 				<div class="max-w-md">
 					<AddFilesPlaceholder>
@@ -600,14 +656,16 @@
 	}}
 />
 
-<div class="flex flex-col w-full h-full max-h-[100dvh] translate-y-1" id="collection-container">
+<div class="flex flex-col w-full translate-y-1" id="collection-container">
 	{#if id && knowledge}
 		<AccessControlModal
 			bind:show={showAccessControlModal}
 			bind:accessControl={knowledge.access_control}
+			allowPublic={$user?.permissions?.sharing?.public_knowledge || $user?.role === 'admin'}
 			onChange={() => {
 				changeDebounceHandler();
 			}}
+			accessRoles={['read', 'write']}
 		/>
 		<div class="w-full mb-2.5">
 			<div class=" flex w-full">
@@ -616,7 +674,7 @@
 						<div class="w-full">
 							<input
 								type="text"
-								class="text-left w-full font-semibold text-2xl font-primary bg-transparent outline-none"
+								class="text-left w-full font-semibold text-2xl font-primary bg-transparent outline-hidden"
 								bind:value={knowledge.name}
 								placeholder="Knowledge Name"
 								on:input={() => {
@@ -625,7 +683,7 @@
 							/>
 						</div>
 
-						<div class="self-center flex-shrink-0">
+						<div class="self-center shrink-0">
 							<button
 								class="bg-gray-50 hover:bg-gray-100 text-black dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-white transition px-2 py-1 rounded-full flex gap-1 items-center"
 								type="button"
@@ -635,7 +693,7 @@
 							>
 								<LockClosed strokeWidth="2.5" className="size-3.5" />
 
-								<div class="text-sm font-medium flex-shrink-0">
+								<div class="text-sm font-medium shrink-0">
 									{$i18n.t('Access')}
 								</div>
 							</button>
@@ -645,7 +703,7 @@
 					<div class="flex w-full px-1">
 						<input
 							type="text"
-							class="text-left text-xs w-full text-gray-500 bg-transparent outline-none"
+							class="text-left text-xs w-full text-gray-500 bg-transparent outline-hidden"
 							bind:value={knowledge.description}
 							placeholder="Knowledge Description"
 							on:input={() => {
@@ -657,228 +715,205 @@
 			</div>
 		</div>
 
-		<div class="flex flex-row flex-1 h-full max-h-full pb-2.5">
-			<PaneGroup direction="horizontal">
-				<Pane
-					bind:pane
-					defaultSize={minSize}
-					collapsible={true}
-					maxSize={50}
-					{minSize}
-					class="h-full"
-					onExpand={() => {
-						showSidepanel = true;
-					}}
-					onCollapse={() => {
-						showSidepanel = false;
-					}}
-				>
-					<div
-						class="{largeScreen ? 'flex-shrink-0' : 'flex-1'}
-						flex
-						py-2
-						rounded-2xl
-						border
-						border-gray-50
-						h-full
-						dark:border-gray-850"
-					>
-						<div class=" flex flex-col w-full space-x-2 rounded-lg h-full">
-							<div class="w-full h-full flex flex-col">
-								<div class=" px-3">
-									<div class="flex py-1">
-										<div class=" self-center ml-1 mr-3">
-											<svg
-												xmlns="http://www.w3.org/2000/svg"
-												viewBox="0 0 20 20"
-												fill="currentColor"
-												class="w-4 h-4"
-											>
-												<path
-													fill-rule="evenodd"
-													d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z"
-													clip-rule="evenodd"
-												/>
-											</svg>
-										</div>
-										<input
-											class=" w-full text-sm pr-4 py-1 rounded-r-xl outline-none bg-transparent"
-											bind:value={query}
-											placeholder={$i18n.t('Search Collection')}
-											on:focus={() => {
-												selectedFileId = null;
-											}}
-										/>
-
-										<div>
-											<AddContentMenu
-												on:upload={(e) => {
-													if (e.detail.type === 'directory') {
-														uploadDirectoryHandler();
-													} else if (e.detail.type === 'text') {
-														showAddTextContentModal = true;
-													} else {
-														document.getElementById('files-input').click();
-													}
-												}}
-												on:sync={(e) => {
-													showSyncConfirmModal = true;
-												}}
-											/>
-										</div>
-									</div>
-								</div>
-
-								{#if filteredItems.length > 0}
-									<div class=" flex overflow-y-auto h-full w-full scrollbar-hidden text-xs">
-										<Files
-											files={filteredItems}
-											{selectedFileId}
-											on:click={(e) => {
-												selectedFileId = selectedFileId === e.detail ? null : e.detail;
-											}}
-											on:delete={(e) => {
-												console.log(e.detail);
-
-												selectedFileId = null;
-												deleteFileHandler(e.detail);
-											}}
-										/>
-									</div>
-								{:else}
-									<div
-										class="m-auto flex flex-col justify-center text-center text-gray-500 text-xs"
-									>
-										<div>
-											{$i18n.t('No content found')}
-										</div>
-
-										<div class="mx-12 mt-2 text-center text-gray-200 dark:text-gray-700">
-											{$i18n.t('Drag and drop a file to upload or select a file to view')}
-										</div>
-									</div>
-								{/if}
-							</div>
-						</div>
-					</div>
-				</Pane>
-
-				{#if largeScreen}
-					<PaneResizer class="relative flex w-2 items-center justify-center bg-background group">
-						<div class="z-10 flex h-7 w-5 items-center justify-center rounded-sm">
-							<EllipsisVertical className="size-4 invisible group-hover:visible" />
-						</div>
-					</PaneResizer>
-					<Pane>
-						<div class="flex-1 flex justify-start h-full max-h-full">
-							{#if selectedFile}
-								<div class=" flex flex-col w-full h-full max-h-full ml-2.5">
-									<div class="flex-shrink-0 mb-2 flex items-center">
-										{#if !showSidepanel}
-											<div class="-translate-x-2">
-												<button
-													class="w-full text-left text-sm p-1.5 rounded-lg dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-gray-850"
-													on:click={() => {
-														pane.expand();
-													}}
-												>
-													<ChevronLeft strokeWidth="2.5" />
-												</button>
-											</div>
-										{/if}
-
-										<div class=" flex-1 text-2xl font-medium">
-											<a
-												class="hover:text-gray-500 hover:dark:text-gray-100 hover:underline flex-grow line-clamp-1"
-												href={selectedFile.id ? `/api/v1/files/${selectedFile.id}/content` : '#'}
-												target="_blank"
-											>
-												{selectedFile?.meta?.name}
-											</a>
-										</div>
-
-										<div>
-											<button
-												class="self-center w-fit text-sm py-1 px-2.5 dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 rounded-lg"
-												on:click={() => {
-													updateFileContentHandler();
-												}}
-											>
-												{$i18n.t('Save')}
-											</button>
-										</div>
-									</div>
-
-									<div
-										class=" flex-1 w-full h-full max-h-full text-sm bg-transparent outline-none overflow-y-auto scrollbar-hidden"
-									>
-										{#key selectedFile.id}
-											<RichTextInput
-												className="input-prose-sm"
-												bind:value={selectedFile.data.content}
-												placeholder={$i18n.t('Add content here')}
-											/>
-										{/key}
-									</div>
-								</div>
-							{:else}
-								<div></div>
-							{/if}
-						</div>
-					</Pane>
-				{:else if !largeScreen && selectedFileId !== null}
-					<Drawer
-						className="h-full"
-						show={selectedFileId !== null}
-						on:close={() => {
-							selectedFileId = null;
-						}}
-					>
-						<div class="flex flex-col justify-start h-full max-h-full p-2">
-							<div class=" flex flex-col w-full h-full max-h-full">
-								<div class="flex-shrink-0 mt-1 mb-2 flex items-center">
-									<div class="mr-2">
+		<div class="flex flex-row flex-1 h-full max-h-full pb-2.5 gap-3">
+			{#if largeScreen}
+				<div class="flex-1 flex justify-start w-full h-full max-h-full">
+					{#if selectedFile}
+						<div class=" flex flex-col w-full h-full max-h-full">
+							<div class="shrink-0 mb-2 flex items-center">
+								{#if !showSidepanel}
+									<div class="-translate-x-2">
 										<button
 											class="w-full text-left text-sm p-1.5 rounded-lg dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-gray-850"
 											on:click={() => {
-												selectedFileId = null;
+												pane.expand();
 											}}
 										>
 											<ChevronLeft strokeWidth="2.5" />
 										</button>
 									</div>
-									<div class=" flex-1 text-xl line-clamp-1">
-										{selectedFile?.meta?.name}
-									</div>
+								{/if}
 
-									<div>
-										<button
-											class="self-center w-fit text-sm py-1 px-2.5 dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 rounded-lg"
-											on:click={() => {
-												updateFileContentHandler();
-											}}
-										>
-											{$i18n.t('Save')}
-										</button>
-									</div>
+								<div class=" flex-1 text-xl font-medium">
+									<a
+										class="hover:text-gray-500 dark:hover:text-gray-100 hover:underline grow line-clamp-1"
+										href={selectedFile.id ? `/api/v1/files/${selectedFile.id}/content` : '#'}
+										target="_blank"
+									>
+										{decodeString(selectedFile?.meta?.name)}
+									</a>
 								</div>
 
-								<div
-									class=" flex-1 w-full h-full max-h-full py-2.5 px-3.5 rounded-lg text-sm bg-transparent overflow-y-auto scrollbar-hidden"
-								>
-									{#key selectedFile.id}
-										<RichTextInput
-											className="input-prose-sm"
-											bind:value={selectedFile.data.content}
-											placeholder={$i18n.t('Add content here')}
+								<div>
+									<button
+										class="self-center w-fit text-sm py-1 px-2.5 dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 rounded-lg"
+										on:click={() => {
+											updateFileContentHandler();
+										}}
+									>
+										{$i18n.t('Save')}
+									</button>
+								</div>
+							</div>
+
+							<div
+								class=" flex-1 w-full h-full max-h-full text-sm bg-transparent outline-hidden overflow-y-auto scrollbar-hidden"
+							>
+								{#key selectedFile.id}
+									<RichTextInput
+										className="input-prose-sm"
+										bind:value={selectedFileContent}
+										placeholder={$i18n.t('Add content here')}
+										preserveBreaks={false}
+									/>
+								{/key}
+							</div>
+						</div>
+					{:else}
+						<div class="h-full flex w-full">
+							<div class="m-auto text-xs text-center text-gray-200 dark:text-gray-700">
+								{$i18n.t('Drag and drop a file to upload or select a file to view')}
+							</div>
+						</div>
+					{/if}
+				</div>
+			{:else if !largeScreen && selectedFileId !== null}
+				<Drawer
+					className="h-full"
+					show={selectedFileId !== null}
+					onClose={() => {
+						selectedFileId = null;
+					}}
+				>
+					<div class="flex flex-col justify-start h-full max-h-full p-2">
+						<div class=" flex flex-col w-full h-full max-h-full">
+							<div class="shrink-0 mt-1 mb-2 flex items-center">
+								<div class="mr-2">
+									<button
+										class="w-full text-left text-sm p-1.5 rounded-lg dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-gray-850"
+										on:click={() => {
+											selectedFileId = null;
+										}}
+									>
+										<ChevronLeft strokeWidth="2.5" />
+									</button>
+								</div>
+								<div class=" flex-1 text-xl line-clamp-1">
+									{selectedFile?.meta?.name}
+								</div>
+
+								<div>
+									<button
+										class="self-center w-fit text-sm py-1 px-2.5 dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 rounded-lg"
+										on:click={() => {
+											updateFileContentHandler();
+										}}
+									>
+										{$i18n.t('Save')}
+									</button>
+								</div>
+							</div>
+
+							<div
+								class=" flex-1 w-full h-full max-h-full py-2.5 px-3.5 rounded-lg text-sm bg-transparent overflow-y-auto scrollbar-hidden"
+							>
+								{#key selectedFile.id}
+									<RichTextInput
+										className="input-prose-sm"
+										bind:value={selectedFileContent}
+										placeholder={$i18n.t('Add content here')}
+										preserveBreaks={false}
+									/>
+								{/key}
+							</div>
+						</div>
+					</div>
+				</Drawer>
+			{/if}
+
+			<div
+				class="{largeScreen ? 'shrink-0 w-72 max-w-72' : 'flex-1'}
+			flex
+			py-2
+			rounded-2xl
+			border
+			border-gray-50
+			h-full
+			dark:border-gray-850"
+			>
+				<div class=" flex flex-col w-full space-x-2 rounded-lg h-full">
+					<div class="w-full h-full flex flex-col">
+						<div class=" px-3">
+							<div class="flex mb-0.5">
+								<div class=" self-center ml-1 mr-3">
+									<svg
+										xmlns="http://www.w3.org/2000/svg"
+										viewBox="0 0 20 20"
+										fill="currentColor"
+										class="w-4 h-4"
+									>
+										<path
+											fill-rule="evenodd"
+											d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z"
+											clip-rule="evenodd"
 										/>
-									{/key}
+									</svg>
+								</div>
+								<input
+									class=" w-full text-sm pr-4 py-1 rounded-r-xl outline-hidden bg-transparent"
+									bind:value={query}
+									placeholder={$i18n.t('Search Collection')}
+									on:focus={() => {
+										selectedFileId = null;
+									}}
+								/>
+
+								<div>
+									<AddContentMenu
+										on:upload={(e) => {
+											if (e.detail.type === 'directory') {
+												uploadDirectoryHandler();
+											} else if (e.detail.type === 'text') {
+												showAddTextContentModal = true;
+											} else {
+												document.getElementById('files-input').click();
+											}
+										}}
+										on:sync={(e) => {
+											showSyncConfirmModal = true;
+										}}
+									/>
 								</div>
 							</div>
 						</div>
-					</Drawer>
-				{/if}
-			</PaneGroup>
+
+						{#if filteredItems.length > 0}
+							<div class=" flex overflow-y-auto h-full w-full scrollbar-hidden text-xs">
+								<Files
+									small
+									files={filteredItems}
+									{selectedFileId}
+									on:click={(e) => {
+										selectedFileId = selectedFileId === e.detail ? null : e.detail;
+									}}
+									on:delete={(e) => {
+										console.log(e.detail);
+
+										selectedFileId = null;
+										deleteFileHandler(e.detail);
+									}}
+								/>
+							</div>
+						{:else}
+							<div class="my-3 flex flex-col justify-center text-center text-gray-500 text-xs">
+								<div>
+									{$i18n.t('No content found')}
+								</div>
+							</div>
+						{/if}
+					</div>
+				</div>
+			</div>
 		</div>
 	{:else}
 		<Spinner />

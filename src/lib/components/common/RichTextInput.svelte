@@ -1,34 +1,53 @@
 <script lang="ts">
 	import { marked } from 'marked';
 	import TurndownService from 'turndown';
-	const turndownService = new TurndownService();
+	const turndownService = new TurndownService({
+		codeBlockStyle: 'fenced',
+		headingStyle: 'atx'
+	});
+	turndownService.escape = (string) => string;
 
 	import { onMount, onDestroy } from 'svelte';
 	import { createEventDispatcher } from 'svelte';
 	const eventDispatch = createEventDispatcher();
 
-	import { EditorState, Plugin, TextSelection } from 'prosemirror-state';
+	import { EditorState, Plugin, PluginKey, TextSelection } from 'prosemirror-state';
+	import { Decoration, DecorationSet } from 'prosemirror-view';
 
 	import { Editor } from '@tiptap/core';
+
+	import { AIAutocompletion } from './RichTextInput/AutoCompletion.js';
 
 	import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
 	import Placeholder from '@tiptap/extension-placeholder';
 	import Highlight from '@tiptap/extension-highlight';
 	import Typography from '@tiptap/extension-typography';
 	import StarterKit from '@tiptap/starter-kit';
-
 	import { all, createLowlight } from 'lowlight';
 
 	import { PASTED_TEXT_CHARACTER_LIMIT } from '$lib/constants';
+
+	export let oncompositionstart = (e) => {};
+	export let oncompositionend = (e) => {};
+	export let onChange = (e) => {};
 
 	// create a lowlight instance with all languages loaded
 	const lowlight = createLowlight(all);
 
 	export let className = 'input-prose';
 	export let placeholder = 'Type here...';
-	export let value = '';
-	export let id = '';
 
+	export let id = '';
+	export let value = '';
+	export let html = '';
+
+	export let json = false;
+	export let raw = false;
+	export let editable = true;
+
+	export let preserveBreaks = false;
+	export let generateAutoCompletion: Function = async () => null;
+	export let autocomplete = false;
 	export let messageInput = false;
 	export let shiftEnter = false;
 	export let largeTextAsFile = false;
@@ -40,12 +59,19 @@
 		throwOnError: false
 	};
 
+	$: if (editor) {
+		editor.setOptions({
+			editable: editable
+		});
+	}
+
+	$: if (value === null && html !== null && editor) {
+		editor.commands.setContent(html);
+	}
+
 	// Function to find the next template in the document
 	function findNextTemplate(doc, from = 0) {
-		const patterns = [
-			{ start: '[', end: ']' },
-			{ start: '{{', end: '}}' }
-		];
+		const patterns = [{ start: '{{', end: '}}' }];
 
 		let result = null;
 
@@ -117,23 +143,46 @@
 	};
 
 	onMount(async () => {
-		async function tryParse(value, attempts = 3, interval = 100) {
-			try {
-				// Try parsing the value
-				return marked.parse(value);
-			} catch (error) {
-				// If no attempts remain, fallback to plain text
-				if (attempts <= 1) {
-					return value;
+		let content = value;
+
+		if (!json) {
+			if (preserveBreaks) {
+				turndownService.addRule('preserveBreaks', {
+					filter: 'br', // Target <br> elements
+					replacement: function (content) {
+						return '<br/>';
+					}
+				});
+			}
+
+			if (!raw) {
+				async function tryParse(value, attempts = 3, interval = 100) {
+					try {
+						// Try parsing the value
+						return marked.parse(value.replaceAll(`\n<br/>`, `<br/>`), {
+							breaks: false
+						});
+					} catch (error) {
+						// If no attempts remain, fallback to plain text
+						if (attempts <= 1) {
+							return value;
+						}
+						// Wait for the interval, then retry
+						await new Promise((resolve) => setTimeout(resolve, interval));
+						return tryParse(value, attempts - 1, interval); // Recursive call
+					}
 				}
-				// Wait for the interval, then retry
-				await new Promise((resolve) => setTimeout(resolve, interval));
-				return tryParse(value, attempts - 1, interval); // Recursive call
+
+				// Usage example
+				content = await tryParse(value);
+			}
+		} else {
+			if (html && !content) {
+				content = html;
 			}
 		}
 
-		// Usage example
-		let content = await tryParse(value);
+		console.log('content', content);
 
 		editor = new Editor({
 			element: element,
@@ -144,42 +193,102 @@
 				}),
 				Highlight,
 				Typography,
-				Placeholder.configure({ placeholder })
+				Placeholder.configure({ placeholder }),
+				...(autocomplete
+					? [
+							AIAutocompletion.configure({
+								generateCompletion: async (text) => {
+									if (text.trim().length === 0) {
+										return null;
+									}
+
+									const suggestion = await generateAutoCompletion(text).catch(() => null);
+									if (!suggestion || suggestion.trim().length === 0) {
+										return null;
+									}
+
+									return suggestion;
+								}
+							})
+						]
+					: [])
 			],
 			content: content,
-			autofocus: true,
+			autofocus: messageInput ? true : false,
 			onTransaction: () => {
 				// force re-render so `editor.isActive` works as expected
 				editor = editor;
 
-				const newValue = turndownService.turndown(editor.getHTML());
-				if (value !== newValue) {
-					value = newValue; // Trigger parent updates
+				html = editor.getHTML();
+
+				onChange({
+					html: editor.getHTML(),
+					json: editor.getJSON(),
+					md: turndownService.turndown(editor.getHTML())
+				});
+
+				if (json) {
+					value = editor.getJSON();
+				} else {
+					if (!raw) {
+						let newValue = turndownService
+							.turndown(
+								editor
+									.getHTML()
+									.replace(/<p><\/p>/g, '<br/>')
+									.replace(/ {2,}/g, (m) => m.replace(/ /g, '\u00a0'))
+							)
+							.replace(/\u00a0/g, ' ');
+
+						if (!preserveBreaks) {
+							newValue = newValue.replace(/<br\/>/g, '');
+						}
+
+						if (value !== newValue) {
+							value = newValue;
+
+							// check if the node is paragraph as well
+							if (editor.isActive('paragraph')) {
+								if (value === '') {
+									editor.commands.clearContent();
+								}
+							}
+						}
+					} else {
+						value = editor.getHTML();
+					}
 				}
 			},
 			editorProps: {
 				attributes: { id },
 				handleDOMEvents: {
+					compositionstart: (view, event) => {
+						oncompositionstart(event);
+						return false;
+					},
+					compositionend: (view, event) => {
+						oncompositionend(event);
+						return false;
+					},
 					focus: (view, event) => {
 						eventDispatch('focus', { event });
 						return false;
 					},
-					keypress: (view, event) => {
-						eventDispatch('keypress', { event });
+					keyup: (view, event) => {
+						eventDispatch('keyup', { event });
 						return false;
 					},
-
 					keydown: (view, event) => {
-						// Handle Tab Key
-						if (event.key === 'Tab') {
-							const handled = selectNextTemplate(view.state, view.dispatch);
-							if (handled) {
-								event.preventDefault();
-								return true;
-							}
-						}
-
 						if (messageInput) {
+							// Handle Tab Key
+							if (event.key === 'Tab') {
+								const handled = selectNextTemplate(view.state, view.dispatch);
+								if (handled) {
+									event.preventDefault();
+									return true;
+								}
+							}
+
 							if (event.key === 'Enter') {
 								// Check if the current selection is inside a structured block (like codeBlock or list)
 								const { state } = view;
@@ -210,22 +319,12 @@
 
 							// Handle shift + Enter for a line break
 							if (shiftEnter) {
-								if (event.key === 'Enter' && event.shiftKey) {
+								if (event.key === 'Enter' && event.shiftKey && !event.ctrlKey && !event.metaKey) {
 									editor.commands.setHardBreak(); // Insert a hard break
 									view.dispatch(view.state.tr.scrollIntoView()); // Move viewport to the cursor
 									event.preventDefault();
 									return true;
 								}
-								if (event.key === 'Enter') {
-									eventDispatch('enter', { event });
-									event.preventDefault();
-									return true;
-								}
-							}
-							if (event.key === 'Enter') {
-								eventDispatch('enter', { event });
-								event.preventDefault();
-								return true;
 							}
 						}
 						eventDispatch('keydown', { event });
@@ -279,7 +378,9 @@
 			}
 		});
 
-		selectTemplate();
+		if (messageInput) {
+			selectTemplate();
+		}
 	});
 
 	onDestroy(() => {
@@ -288,11 +389,49 @@
 		}
 	});
 
-	// Update the editor content if the external `value` changes
-	$: if (editor && value !== turndownService.turndown(editor.getHTML())) {
-		editor.commands.setContent(marked.parse(value)); // Update editor content
-		selectTemplate();
+	$: if (value !== null && editor) {
+		onValueChange();
 	}
+
+	const onValueChange = () => {
+		if (!editor) return;
+
+		if (json) {
+			if (JSON.stringify(value) !== JSON.stringify(editor.getJSON())) {
+				editor.commands.setContent(value);
+				selectTemplate();
+			}
+		} else {
+			if (raw) {
+				if (value !== editor.getHTML()) {
+					editor.commands.setContent(value);
+					selectTemplate();
+				}
+			} else {
+				if (
+					value !==
+					turndownService
+						.turndown(
+							(preserveBreaks
+								? editor.getHTML().replace(/<p><\/p>/g, '<br/>')
+								: editor.getHTML()
+							).replace(/ {2,}/g, (m) => m.replace(/ /g, '\u00a0'))
+						)
+						.replace(/\u00a0/g, ' ')
+				) {
+					preserveBreaks
+						? editor.commands.setContent(value)
+						: editor.commands.setContent(
+								marked.parse(value.replaceAll(`\n<br/>`, `<br/>`), {
+									breaks: false
+								})
+							); // Update editor content
+
+					selectTemplate();
+				}
+			}
+		}
+	};
 </script>
 
 <div bind:this={element} class="relative w-full min-w-full h-full min-h-fit {className}" />

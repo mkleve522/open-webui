@@ -2,24 +2,30 @@
 	import { toast } from 'svelte-sonner';
 	import dayjs from 'dayjs';
 	import { getContext, createEventDispatcher } from 'svelte';
+	import localizedFormat from 'dayjs/plugin/localizedFormat';
 
 	const dispatch = createEventDispatcher();
+	dayjs.extend(localizedFormat);
 
 	import { getChatListByUserId, deleteChatById, getArchivedChatList } from '$lib/apis/chats';
 
 	import Modal from '$lib/components/common/Modal.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
+	import Spinner from '$lib/components/common/Spinner.svelte';
+	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 
 	const i18n = getContext('i18n');
 
 	export let show = false;
 	export let user;
 
-	let chats = [];
+	let chats = null;
+	let showDeleteConfirmDialog = false;
+	let chatToDelete = null;
 
 	const deleteChatHandler = async (chatId) => {
 		const res = await deleteChatById(localStorage.token, chatId).catch((error) => {
-			toast.error(error);
+			toast.error(`${error}`);
 		});
 
 		chats = await getChatListByUserId(localStorage.token, user.id);
@@ -31,6 +37,8 @@
 				chats = await getChatListByUserId(localStorage.token, user.id);
 			}
 		})();
+	} else {
+		chats = null;
 	}
 
 	let sortKey = 'updated_at'; // default sort key
@@ -45,40 +53,49 @@
 	}
 </script>
 
-<Modal size="lg" bind:show>
-	<div>
-		<div class=" flex justify-between dark:text-gray-300 px-5 py-4">
-			<div class=" text-lg font-medium self-center capitalize">
-				{$i18n.t("{{user}}'s Chats", { user: user.name })}
-			</div>
-			<button
-				class="self-center"
-				on:click={() => {
-					show = false;
-				}}
-			>
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					viewBox="0 0 20 20"
-					fill="currentColor"
-					class="w-5 h-5"
-				>
-					<path
-						d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"
-					/>
-				</svg>
-			</button>
-		</div>
-		<hr class=" dark:border-gray-850" />
+<ConfirmDialog
+	bind:show={showDeleteConfirmDialog}
+	on:confirm={() => {
+		if (chatToDelete) {
+			deleteChatHandler(chatToDelete);
+			chatToDelete = null;
+		}
+	}}
+/>
 
-		<div class="flex flex-col md:flex-row w-full px-5 py-4 md:space-x-4 dark:text-gray-200">
-			<div class=" flex flex-col w-full sm:flex-row sm:justify-center sm:space-x-6">
+<Modal size="lg" bind:show>
+	<div class=" flex justify-between dark:text-gray-300 px-5 pt-4">
+		<div class=" text-lg font-medium self-center capitalize">
+			{$i18n.t("{{user}}'s Chats", { user: user.name })}
+		</div>
+		<button
+			class="self-center"
+			on:click={() => {
+				show = false;
+			}}
+		>
+			<svg
+				xmlns="http://www.w3.org/2000/svg"
+				viewBox="0 0 20 20"
+				fill="currentColor"
+				class="w-5 h-5"
+			>
+				<path
+					d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"
+				/>
+			</svg>
+		</button>
+	</div>
+
+	<div class="flex flex-col md:flex-row w-full px-5 pt-2 pb-4 md:space-x-4 dark:text-gray-200">
+		<div class=" flex flex-col w-full sm:flex-row sm:justify-center sm:space-x-6">
+			{#if chats}
 				{#if chats.length > 0}
 					<div class="text-left text-sm w-full mb-4 max-h-[22rem] overflow-y-scroll">
 						<div class="relative overflow-x-auto">
 							<table class="w-full text-sm text-left text-gray-600 dark:text-gray-400 table-auto">
 								<thead
-									class="text-xs text-gray-700 uppercase bg-transparent dark:text-gray-200 border-b-2 dark:border-gray-800"
+									class="text-xs text-gray-700 uppercase bg-transparent dark:text-gray-200 border-b-2 dark:border-gray-850"
 								>
 									<tr>
 										<th
@@ -128,7 +145,7 @@
 
 											<td class=" px-3 py-1 hidden md:flex h-[2.5rem] justify-end">
 												<div class="my-auto shrink-0">
-													{dayjs(chat.updated_at * 1000).format($i18n.t('MMMM DD, YYYY HH:mm'))}
+													{dayjs(chat.updated_at * 1000).format('LLL')}
 												</div>
 											</td>
 
@@ -138,7 +155,8 @@
 														<button
 															class="self-center w-fit text-sm px-2 py-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
 															on:click={async () => {
-																deleteChatHandler(chat.id);
+																chatToDelete = chat.id;
+																showDeleteConfirmDialog = true;
 															}}
 														>
 															<svg
@@ -176,7 +194,9 @@
 						{$i18n.t('has no conversations.')}
 					</div>
 				{/if}
-			</div>
+			{:else}
+				<Spinner />
+			{/if}
 		</div>
 	</div>
 </Modal>

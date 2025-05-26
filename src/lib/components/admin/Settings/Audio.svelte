@@ -10,7 +10,7 @@
 		getModels as _getModels,
 		getVoices as _getVoices
 	} from '$lib/apis/audio';
-	import { config } from '$lib/stores';
+	import { config, settings } from '$lib/stores';
 
 	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
 
@@ -32,6 +32,7 @@
 	let TTS_VOICE = '';
 	let TTS_SPLIT_ON: TTS_RESPONSE_SPLIT = TTS_RESPONSE_SPLIT.PUNCTUATION;
 	let TTS_AZURE_SPEECH_REGION = '';
+	let TTS_AZURE_SPEECH_BASE_URL = '';
 	let TTS_AZURE_SPEECH_OUTPUT_FORMAT = '';
 
 	let STT_OPENAI_API_BASE_URL = '';
@@ -39,6 +40,12 @@
 	let STT_ENGINE = '';
 	let STT_MODEL = '';
 	let STT_WHISPER_MODEL = '';
+	let STT_AZURE_API_KEY = '';
+	let STT_AZURE_REGION = '';
+	let STT_AZURE_LOCALES = '';
+	let STT_AZURE_BASE_URL = '';
+	let STT_AZURE_MAX_SPEAKERS = '';
+	let STT_DEEPGRAM_API_KEY = '';
 
 	let STT_WHISPER_MODEL_LOADING = false;
 
@@ -50,8 +57,11 @@
 		if (TTS_ENGINE === '') {
 			models = [];
 		} else {
-			const res = await _getModels(localStorage.token).catch((e) => {
-				toast.error(e);
+			const res = await _getModels(
+				localStorage.token,
+				$config?.features?.enable_direct_connections && ($settings?.directConnections ?? null)
+			).catch((e) => {
+				toast.error(`${e}`);
 			});
 
 			if (res) {
@@ -74,7 +84,7 @@
 			}, 100);
 		} else {
 			const res = await _getVoices(localStorage.token).catch((e) => {
-				toast.error(e);
+				toast.error(`${e}`);
 			});
 
 			if (res) {
@@ -96,6 +106,7 @@
 				VOICE: TTS_VOICE,
 				SPLIT_ON: TTS_SPLIT_ON,
 				AZURE_SPEECH_REGION: TTS_AZURE_SPEECH_REGION,
+				AZURE_SPEECH_BASE_URL: TTS_AZURE_SPEECH_BASE_URL,
 				AZURE_SPEECH_OUTPUT_FORMAT: TTS_AZURE_SPEECH_OUTPUT_FORMAT
 			},
 			stt: {
@@ -103,7 +114,13 @@
 				OPENAI_API_KEY: STT_OPENAI_API_KEY,
 				ENGINE: STT_ENGINE,
 				MODEL: STT_MODEL,
-				WHISPER_MODEL: STT_WHISPER_MODEL
+				WHISPER_MODEL: STT_WHISPER_MODEL,
+				DEEPGRAM_API_KEY: STT_DEEPGRAM_API_KEY,
+				AZURE_API_KEY: STT_AZURE_API_KEY,
+				AZURE_REGION: STT_AZURE_REGION,
+				AZURE_LOCALES: STT_AZURE_LOCALES,
+				AZURE_BASE_URL: STT_AZURE_BASE_URL,
+				AZURE_MAX_SPEAKERS: STT_AZURE_MAX_SPEAKERS
 			}
 		});
 
@@ -134,8 +151,9 @@
 
 			TTS_SPLIT_ON = res.tts.SPLIT_ON || TTS_RESPONSE_SPLIT.PUNCTUATION;
 
-			TTS_AZURE_SPEECH_OUTPUT_FORMAT = res.tts.AZURE_SPEECH_OUTPUT_FORMAT;
 			TTS_AZURE_SPEECH_REGION = res.tts.AZURE_SPEECH_REGION;
+			TTS_AZURE_SPEECH_BASE_URL = res.tts.AZURE_SPEECH_BASE_URL;
+			TTS_AZURE_SPEECH_OUTPUT_FORMAT = res.tts.AZURE_SPEECH_OUTPUT_FORMAT;
 
 			STT_OPENAI_API_BASE_URL = res.stt.OPENAI_API_BASE_URL;
 			STT_OPENAI_API_KEY = res.stt.OPENAI_API_KEY;
@@ -143,6 +161,12 @@
 			STT_ENGINE = res.stt.ENGINE;
 			STT_MODEL = res.stt.MODEL;
 			STT_WHISPER_MODEL = res.stt.WHISPER_MODEL;
+			STT_AZURE_API_KEY = res.stt.AZURE_API_KEY;
+			STT_AZURE_REGION = res.stt.AZURE_REGION;
+			STT_AZURE_LOCALES = res.stt.AZURE_LOCALES;
+			STT_AZURE_BASE_URL = res.stt.AZURE_BASE_URL;
+			STT_AZURE_MAX_SPEAKERS = res.stt.AZURE_MAX_SPEAKERS;
+			STT_DEEPGRAM_API_KEY = res.stt.DEEPGRAM_API_KEY;
 		}
 
 		await getVoices();
@@ -166,13 +190,15 @@
 					<div class=" self-center text-xs font-medium">{$i18n.t('Speech-to-Text Engine')}</div>
 					<div class="flex items-center relative">
 						<select
-							class="dark:bg-gray-900 cursor-pointer w-fit pr-8 rounded px-2 p-1 text-xs bg-transparent outline-none text-right"
+							class="dark:bg-gray-900 cursor-pointer w-fit pr-8 rounded-sm px-2 p-1 text-xs bg-transparent outline-hidden text-right"
 							bind:value={STT_ENGINE}
 							placeholder="Select an engine"
 						>
 							<option value="">{$i18n.t('Whisper (Local)')}</option>
 							<option value="openai">OpenAI</option>
 							<option value="web">{$i18n.t('Web API')}</option>
+							<option value="deepgram">Deepgram</option>
+							<option value="azure">Azure AI Speech</option>
 						</select>
 					</div>
 				</div>
@@ -181,7 +207,7 @@
 					<div>
 						<div class="mt-1 flex gap-2 mb-1">
 							<input
-								class="flex-1 w-full bg-transparent outline-none"
+								class="flex-1 w-full bg-transparent outline-hidden"
 								placeholder={$i18n.t('API Base URL')}
 								bind:value={STT_OPENAI_API_BASE_URL}
 								required
@@ -191,7 +217,7 @@
 						</div>
 					</div>
 
-					<hr class=" dark:border-gray-850 my-2" />
+					<hr class="border-gray-100 dark:border-gray-850 my-2" />
 
 					<div>
 						<div class=" mb-1.5 text-sm font-medium">{$i18n.t('STT Model')}</div>
@@ -199,7 +225,7 @@
 							<div class="flex-1">
 								<input
 									list="model-list"
-									class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
+									class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
 									bind:value={STT_MODEL}
 									placeholder="Select a model"
 								/>
@@ -210,6 +236,101 @@
 							</div>
 						</div>
 					</div>
+				{:else if STT_ENGINE === 'deepgram'}
+					<div>
+						<div class="mt-1 flex gap-2 mb-1">
+							<SensitiveInput placeholder={$i18n.t('API Key')} bind:value={STT_DEEPGRAM_API_KEY} />
+						</div>
+					</div>
+
+					<hr class="border-gray-100 dark:border-gray-850 my-2" />
+
+					<div>
+						<div class=" mb-1.5 text-sm font-medium">{$i18n.t('STT Model')}</div>
+						<div class="flex w-full">
+							<div class="flex-1">
+								<input
+									class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+									bind:value={STT_MODEL}
+									placeholder="Select a model (optional)"
+								/>
+							</div>
+						</div>
+						<div class="mt-2 mb-1 text-xs text-gray-400 dark:text-gray-500">
+							{$i18n.t('Leave model field empty to use the default model.')}
+							<a
+								class=" hover:underline dark:text-gray-200 text-gray-800"
+								href="https://developers.deepgram.com/docs/models"
+								target="_blank"
+							>
+								{$i18n.t('Click here to see available models.')}
+							</a>
+						</div>
+					</div>
+				{:else if STT_ENGINE === 'azure'}
+					<div>
+						<div class="mt-1 flex gap-2 mb-1">
+							<SensitiveInput
+								placeholder={$i18n.t('API Key')}
+								bind:value={STT_AZURE_API_KEY}
+								required
+							/>
+						</div>
+
+						<hr class="border-gray-100 dark:border-gray-850 my-2" />
+
+						<div>
+							<div class=" mb-1.5 text-sm font-medium">{$i18n.t('Azure Region')}</div>
+							<div class="flex w-full">
+								<div class="flex-1">
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={STT_AZURE_REGION}
+										placeholder={$i18n.t('e.g., westus (leave blank for eastus)')}
+									/>
+								</div>
+							</div>
+						</div>
+
+						<div>
+							<div class=" mb-1.5 text-sm font-medium">{$i18n.t('Language Locales')}</div>
+							<div class="flex w-full">
+								<div class="flex-1">
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={STT_AZURE_LOCALES}
+										placeholder={$i18n.t('e.g., en-US,ja-JP (leave blank for auto-detect)')}
+									/>
+								</div>
+							</div>
+						</div>
+
+						<div>
+							<div class=" mb-1.5 text-sm font-medium">{$i18n.t('Endpoint URL')}</div>
+							<div class="flex w-full">
+								<div class="flex-1">
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={STT_AZURE_BASE_URL}
+										placeholder={$i18n.t('(leave blank for to use commercial endpoint)')}
+									/>
+								</div>
+							</div>
+						</div>
+
+						<div>
+							<div class=" mb-1.5 text-sm font-medium">{$i18n.t('Max Speakers')}</div>
+							<div class="flex w-full">
+								<div class="flex-1">
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={STT_AZURE_MAX_SPEAKERS}
+										placeholder={$i18n.t('e.g., 3, 4, 5 (leave blank for default)')}
+									/>
+								</div>
+							</div>
+						</div>
+					</div>
 				{:else if STT_ENGINE === ''}
 					<div>
 						<div class=" mb-1.5 text-sm font-medium">{$i18n.t('STT Model')}</div>
@@ -217,7 +338,7 @@
 						<div class="flex w-full">
 							<div class="flex-1 mr-2">
 								<input
-									class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
+									class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
 									placeholder={$i18n.t('Set whisper model')}
 									bind:value={STT_WHISPER_MODEL}
 								/>
@@ -295,7 +416,7 @@
 				{/if}
 			</div>
 
-			<hr class=" dark:border-gray-800" />
+			<hr class="border-gray-100 dark:border-gray-850" />
 
 			<div>
 				<div class=" mb-1 text-sm font-medium">{$i18n.t('TTS Settings')}</div>
@@ -304,7 +425,7 @@
 					<div class=" self-center text-xs font-medium">{$i18n.t('Text-to-Speech Engine')}</div>
 					<div class="flex items-center relative">
 						<select
-							class=" dark:bg-gray-900 w-fit pr-8 cursor-pointer rounded px-2 p-1 text-xs bg-transparent outline-none text-right"
+							class=" dark:bg-gray-900 w-fit pr-8 cursor-pointer rounded-sm px-2 p-1 text-xs bg-transparent outline-hidden text-right"
 							bind:value={TTS_ENGINE}
 							placeholder="Select a mode"
 							on:change={async (e) => {
@@ -334,7 +455,7 @@
 					<div>
 						<div class="mt-1 flex gap-2 mb-1">
 							<input
-								class="flex-1 w-full bg-transparent outline-none"
+								class="flex-1 w-full bg-transparent outline-hidden"
 								placeholder={$i18n.t('API Base URL')}
 								bind:value={TTS_OPENAI_API_BASE_URL}
 								required
@@ -347,7 +468,7 @@
 					<div>
 						<div class="mt-1 flex gap-2 mb-1">
 							<input
-								class="flex-1 w-full rounded-lg py-2 pl-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
+								class="flex-1 w-full rounded-lg py-2 pl-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
 								placeholder={$i18n.t('API Key')}
 								bind:value={TTS_API_KEY}
 								required
@@ -357,23 +478,40 @@
 				{:else if TTS_ENGINE === 'azure'}
 					<div>
 						<div class="mt-1 flex gap-2 mb-1">
-							<input
-								class="flex-1 w-full rounded-lg py-2 pl-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
-								placeholder={$i18n.t('API Key')}
-								bind:value={TTS_API_KEY}
-								required
-							/>
-							<input
-								class="flex-1 w-full rounded-lg py-2 pl-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
-								placeholder={$i18n.t('Azure Region')}
-								bind:value={TTS_AZURE_SPEECH_REGION}
-								required
-							/>
+							<SensitiveInput placeholder={$i18n.t('API Key')} bind:value={TTS_API_KEY} required />
+						</div>
+
+						<hr class="border-gray-100 dark:border-gray-850 my-2" />
+
+						<div>
+							<div class=" mb-1.5 text-sm font-medium">{$i18n.t('Azure Region')}</div>
+							<div class="flex w-full">
+								<div class="flex-1">
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={TTS_AZURE_SPEECH_REGION}
+										placeholder={$i18n.t('e.g., westus (leave blank for eastus)')}
+									/>
+								</div>
+							</div>
+						</div>
+
+						<div>
+							<div class=" mb-1.5 text-sm font-medium">{$i18n.t('Endpoint URL')}</div>
+							<div class="flex w-full">
+								<div class="flex-1">
+									<input
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+										bind:value={TTS_AZURE_SPEECH_BASE_URL}
+										placeholder={$i18n.t('(leave blank for to use commercial endpoint)')}
+									/>
+								</div>
+							</div>
 						</div>
 					</div>
 				{/if}
 
-				<hr class=" dark:border-gray-850 my-2" />
+				<hr class="border-gray-100 dark:border-gray-850 my-2" />
 
 				{#if TTS_ENGINE === ''}
 					<div>
@@ -381,7 +519,7 @@
 						<div class="flex w-full">
 							<div class="flex-1">
 								<select
-									class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
+									class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
 									bind:value={TTS_VOICE}
 								>
 									<option value="" selected={TTS_VOICE !== ''}>{$i18n.t('Default')}</option>
@@ -389,8 +527,7 @@
 										<option
 											value={voice.voiceURI}
 											class="bg-gray-100 dark:bg-gray-700"
-											selected={TTS_VOICE === voice.voiceURI}
-											>{voice.name.replace('+', ', ')}</option
+											selected={TTS_VOICE === voice.voiceURI}>{voice.name}</option
 										>
 									{/each}
 								</select>
@@ -404,7 +541,7 @@
 							<div class="flex-1">
 								<input
 									list="model-list"
-									class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
+									class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
 									bind:value={TTS_MODEL}
 									placeholder="CMU ARCTIC speaker embedding name"
 								/>
@@ -446,7 +583,7 @@
 								<div class="flex-1">
 									<input
 										list="voice-list"
-										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
 										bind:value={TTS_VOICE}
 										placeholder="Select a voice"
 									/>
@@ -465,7 +602,7 @@
 								<div class="flex-1">
 									<input
 										list="tts-model-list"
-										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
 										bind:value={TTS_MODEL}
 										placeholder="Select a model"
 									/>
@@ -487,7 +624,7 @@
 								<div class="flex-1">
 									<input
 										list="voice-list"
-										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
 										bind:value={TTS_VOICE}
 										placeholder="Select a voice"
 									/>
@@ -506,7 +643,7 @@
 								<div class="flex-1">
 									<input
 										list="tts-model-list"
-										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
 										bind:value={TTS_MODEL}
 										placeholder="Select a model"
 									/>
@@ -528,7 +665,7 @@
 								<div class="flex-1">
 									<input
 										list="voice-list"
-										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
 										bind:value={TTS_VOICE}
 										placeholder="Select a voice"
 									/>
@@ -555,7 +692,7 @@
 								<div class="flex-1">
 									<input
 										list="tts-model-list"
-										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
+										class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
 										bind:value={TTS_AZURE_SPEECH_OUTPUT_FORMAT}
 										placeholder="Select a output format"
 									/>
@@ -565,13 +702,13 @@
 					</div>
 				{/if}
 
-				<hr class="dark:border-gray-850 my-2" />
+				<hr class="border-gray-100 dark:border-gray-850 my-2" />
 
 				<div class="pt-0.5 flex w-full justify-between">
 					<div class="self-center text-xs font-medium">{$i18n.t('Response splitting')}</div>
 					<div class="flex items-center relative">
 						<select
-							class="dark:bg-gray-900 w-fit pr-8 cursor-pointer rounded px-2 p-1 text-xs bg-transparent outline-none text-right"
+							class="dark:bg-gray-900 w-fit pr-8 cursor-pointer rounded-sm px-2 p-1 text-xs bg-transparent outline-hidden text-right"
 							aria-label="Select how to split message text for TTS requests"
 							bind:value={TTS_SPLIT_ON}
 						>

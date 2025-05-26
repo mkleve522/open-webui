@@ -24,6 +24,17 @@
 	import ModelEditor from '$lib/components/workspace/Models/ModelEditor.svelte';
 	import { toast } from 'svelte-sonner';
 	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
+	import Cog6 from '$lib/components/icons/Cog6.svelte';
+	import ConfigureModelsModal from './Models/ConfigureModelsModal.svelte';
+	import Wrench from '$lib/components/icons/Wrench.svelte';
+	import ArrowDownTray from '$lib/components/icons/ArrowDownTray.svelte';
+	import ManageModelsModal from './Models/ManageModelsModal.svelte';
+	import ModelMenu from '$lib/components/admin/Settings/Models/ModelMenu.svelte';
+	import EllipsisHorizontal from '$lib/components/icons/EllipsisHorizontal.svelte';
+	import EyeSlash from '$lib/components/icons/EyeSlash.svelte';
+	import Eye from '$lib/components/icons/Eye.svelte';
+
+	let shiftKey = false;
 
 	let importFiles;
 	let modelsImportInputElement: HTMLInputElement;
@@ -35,12 +46,21 @@
 
 	let filteredModels = [];
 	let selectedModelId = null;
-	let showResetModal = false;
+
+	let showConfigModal = false;
+	let showManageModal = false;
 
 	$: if (models) {
-		filteredModels = models.filter(
-			(m) => searchValue === '' || m.name.toLowerCase().includes(searchValue.toLowerCase())
-		);
+		filteredModels = models
+			.filter((m) => searchValue === '' || m.name.toLowerCase().includes(searchValue.toLowerCase()))
+			.sort((a, b) => {
+				// // Check if either model is inactive and push them to the bottom
+				// if ((a.is_active ?? true) !== (b.is_active ?? true)) {
+				// 	return (b.is_active ?? true) - (a.is_active ?? true);
+				// }
+				// If both models' active states are the same, sort alphabetically
+				return a.name.localeCompare(b.name);
+			});
 	}
 
 	let searchValue = '';
@@ -54,7 +74,7 @@
 
 	const init = async () => {
 		workspaceModels = await getBaseModels(localStorage.token);
-		baseModels = await getModels(localStorage.token, true);
+		baseModels = await getModels(localStorage.token, null, true);
 
 		models = baseModels.map((m) => {
 			const workspaceModel = workspaceModels.find((wm) => wm.id === m.id);
@@ -88,7 +108,15 @@
 				toast.success($i18n.t('Model updated successfully'));
 			}
 		} else {
-			const res = await createNewModel(localStorage.token, model).catch((error) => {
+			const res = await createNewModel(localStorage.token, {
+				meta: {},
+				id: model.id,
+				name: model.name,
+				base_model_id: null,
+				params: {},
+				access_control: {},
+				...model
+			}).catch((error) => {
 				return null;
 			});
 
@@ -97,7 +125,12 @@
 			}
 		}
 
-		_models.set(await getModels(localStorage.token));
+		_models.set(
+			await getModels(
+				localStorage.token,
+				$config?.features?.enable_direct_connections && ($settings?.directConnections ?? null)
+			)
+		);
 		await init();
 	};
 
@@ -114,32 +147,80 @@
 			}).catch((error) => {
 				return null;
 			});
-
-			await init();
 		} else {
 			await toggleModelById(localStorage.token, model.id);
 		}
 
-		_models.set(await getModels(localStorage.token));
+		// await init();
+		_models.set(
+			await getModels(
+				localStorage.token,
+				$config?.features?.enable_direct_connections && ($settings?.directConnections ?? null)
+			)
+		);
+	};
+
+	const hideModelHandler = async (model) => {
+		model.meta = {
+			...model.meta,
+			hidden: !(model?.meta?.hidden ?? false)
+		};
+
+		console.debug(model);
+
+		toast.success(
+			model.meta.hidden
+				? $i18n.t(`Model {{name}} is now hidden`, {
+						name: model.id
+					})
+				: $i18n.t(`Model {{name}} is now visible`, {
+						name: model.id
+					})
+		);
+
+		upsertModelHandler(model);
+	};
+
+	const exportModelHandler = async (model) => {
+		let blob = new Blob([JSON.stringify([model])], {
+			type: 'application/json'
+		});
+		saveAs(blob, `${model.id}-${Date.now()}.json`);
 	};
 
 	onMount(async () => {
-		init();
+		await init();
+
+		const onKeyDown = (event) => {
+			if (event.key === 'Shift') {
+				shiftKey = true;
+			}
+		};
+
+		const onKeyUp = (event) => {
+			if (event.key === 'Shift') {
+				shiftKey = false;
+			}
+		};
+
+		const onBlur = () => {
+			shiftKey = false;
+		};
+
+		window.addEventListener('keydown', onKeyDown);
+		window.addEventListener('keyup', onKeyUp);
+		window.addEventListener('blur-sm', onBlur);
+
+		return () => {
+			window.removeEventListener('keydown', onKeyDown);
+			window.removeEventListener('keyup', onKeyUp);
+			window.removeEventListener('blur-sm', onBlur);
+		};
 	});
 </script>
 
-<ConfirmDialog
-	title={$i18n.t('Delete All Models')}
-	message={$i18n.t('This will delete all models including custom models and cannot be undone.')}
-	bind:show={showResetModal}
-	onConfirm={async () => {
-		const res = deleteAllModels(localStorage.token);
-		if (res) {
-			toast.success($i18n.t('All models deleted successfully'));
-			init();
-		}
-	}}
-/>
+<ConfigureModelsModal bind:show={showConfigModal} initHandler={init} />
+<ManageModelsModal bind:show={showManageModal} />
 
 {#if models !== null}
 	{#if selectedModelId === null}
@@ -153,18 +234,28 @@
 					>
 				</div>
 
-				<div>
-					<Tooltip content={$i18n.t('This will delete all models including custom models')}>
+				<div class="flex items-center gap-1.5">
+					<Tooltip content={$i18n.t('Manage Models')}>
 						<button
-							class=" px-2.5 py-1 rounded-full flex gap-1 items-center"
+							class=" p-1 rounded-full flex gap-1 items-center"
 							type="button"
 							on:click={() => {
-								showResetModal = true;
+								showManageModal = true;
 							}}
 						>
-							<div class="text-xs flex-shrink-0">
-								{$i18n.t('Reset')}
-							</div>
+							<ArrowDownTray />
+						</button>
+					</Tooltip>
+
+					<Tooltip content={$i18n.t('Settings')}>
+						<button
+							class=" p-1 rounded-full flex gap-1 items-center"
+							type="button"
+							on:click={() => {
+								showConfigModal = true;
+							}}
+						>
+							<Cog6 />
 						</button>
 					</Tooltip>
 				</div>
@@ -176,7 +267,7 @@
 						<Search className="size-3.5" />
 					</div>
 					<input
-						class=" w-full text-sm py-1 rounded-r-xl outline-none bg-transparent"
+						class=" w-full text-sm py-1 rounded-r-xl outline-hidden bg-transparent"
 						bind:value={searchValue}
 						placeholder={$i18n.t('Search Models')}
 					/>
@@ -186,9 +277,12 @@
 
 		<div class=" my-2 mb-5" id="model-list">
 			{#if models.length > 0}
-				{#each filteredModels as model, modelIdx (`${model.id}-${modelIdx}`)}
+				{#each filteredModels as model, modelIdx (model.id)}
 					<div
-						class=" flex space-x-4 cursor-pointer w-full px-3 py-2 dark:hover:bg-white/5 hover:bg-black/5 rounded-lg transition"
+						class=" flex space-x-4 cursor-pointer w-full px-3 py-2 dark:hover:bg-white/5 hover:bg-black/5 rounded-lg transition {model
+							?.meta?.hidden
+							? 'opacity-50 dark:opacity-50'
+							: ''}"
 						id="model-item-{model.id}"
 					>
 						<button
@@ -238,41 +332,78 @@
 							</div>
 						</button>
 						<div class="flex flex-row gap-0.5 items-center self-center">
-							<button
-								class="self-center w-fit text-sm px-2 py-2 dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
-								type="button"
-								on:click={() => {
-									selectedModelId = model.id;
-								}}
-							>
-								<svg
-									xmlns="http://www.w3.org/2000/svg"
-									fill="none"
-									viewBox="0 0 24 24"
-									stroke-width="1.5"
-									stroke="currentColor"
-									class="w-4 h-4"
-								>
-									<path
-										stroke-linecap="round"
-										stroke-linejoin="round"
-										d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125"
-									/>
-								</svg>
-							</button>
-
-							<div class="ml-1">
-								<Tooltip
-									content={(model?.is_active ?? true) ? $i18n.t('Enabled') : $i18n.t('Disabled')}
-								>
-									<Switch
-										bind:state={model.is_active}
-										on:change={async () => {
-											toggleModelHandler(model);
+							{#if shiftKey}
+								<Tooltip content={model?.meta?.hidden ? $i18n.t('Show') : $i18n.t('Hide')}>
+									<button
+										class="self-center w-fit text-sm px-2 py-2 dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
+										type="button"
+										on:click={() => {
+											hideModelHandler(model);
 										}}
-									/>
+									>
+										{#if model?.meta?.hidden}
+											<EyeSlash />
+										{:else}
+											<Eye />
+										{/if}
+									</button>
 								</Tooltip>
-							</div>
+							{:else}
+								<button
+									class="self-center w-fit text-sm px-2 py-2 dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
+									type="button"
+									on:click={() => {
+										selectedModelId = model.id;
+									}}
+								>
+									<svg
+										xmlns="http://www.w3.org/2000/svg"
+										fill="none"
+										viewBox="0 0 24 24"
+										stroke-width="1.5"
+										stroke="currentColor"
+										class="w-4 h-4"
+									>
+										<path
+											stroke-linecap="round"
+											stroke-linejoin="round"
+											d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125"
+										/>
+									</svg>
+								</button>
+
+								<ModelMenu
+									user={$user}
+									{model}
+									exportHandler={() => {
+										exportModelHandler(model);
+									}}
+									hideHandler={() => {
+										hideModelHandler(model);
+									}}
+									onClose={() => {}}
+								>
+									<button
+										class="self-center w-fit text-sm p-1.5 dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
+										type="button"
+									>
+										<EllipsisHorizontal className="size-5" />
+									</button>
+								</ModelMenu>
+
+								<div class="ml-1">
+									<Tooltip
+										content={(model?.is_active ?? true) ? $i18n.t('Enabled') : $i18n.t('Disabled')}
+									>
+										<Switch
+											bind:state={model.is_active}
+											on:change={async () => {
+												toggleModelHandler(model);
+											}}
+										/>
+									</Tooltip>
+								</div>
+							{/if}
 						</div>
 					</div>
 				{/each}
@@ -317,7 +448,13 @@
 									}
 								}
 
-								await _models.set(await getModels(localStorage.token));
+								await _models.set(
+									await getModels(
+										localStorage.token,
+										$config?.features?.enable_direct_connections &&
+											($settings?.directConnections ?? null)
+									)
+								);
 								init();
 							};
 
@@ -358,7 +495,7 @@
 						}}
 					>
 						<div class=" self-center mr-2 font-medium line-clamp-1">
-							{$i18n.t('Export Presets')}
+							{$i18n.t('Export Presets')} ({models.length})
 						</div>
 
 						<div class=" self-center">
